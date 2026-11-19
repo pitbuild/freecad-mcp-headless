@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2 — 2026-11-19
+
+- PNG rendering rewritten as a z-buffered software rasteriser with Gouraud shading.
+  The previous matplotlib painter filled whole triangles in one flat colour, drew their
+  outlines, ignored back faces and aliased every silhouette — on a real assembly the image
+  looked shredded. Reported by Roman on 14S3P_layout.
+- Back-face culling, per-pixel depth buffer, interpolated vertex normals and 2x
+  supersampling; tessellation tolerance tightened to ~0.01 mm (adaptive down to the
+  triangle budget).
+- Render time for a 184k-triangle assembly: ~39 s at 1400x1000. SVG output is unchanged.
+
 ## 0.1.1 — 2026-11-19
 
 - Measure, bounding box and rendering now ignore PartDesign datum geometry (planes,

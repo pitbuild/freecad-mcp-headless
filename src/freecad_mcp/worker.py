@@ -601,8 +601,9 @@ def _shade(normal, light=(0.35, -0.55, 0.75)):
     ln = math.sqrt(sum(c * c for c in light)) or 1.0
     nn = math.sqrt(nx * nx + ny * ny + nz * nz) or 1.0
     dot = (nx * light[0] + ny * light[1] + nz * light[2]) / (ln * nn)
-    factor = 0.42 + 0.58 * max(0.0, dot)
-    base = (0.47, 0.65, 0.82)
+    # Two-sided lighting: inward-facing triangles stay readable instead of black.
+    factor = 0.58 + 0.42 * abs(dot)
+    base = (0.55, 0.68, 0.82)
     return tuple(min(1.0, c * factor) for c in base)
 
 
@@ -614,24 +615,175 @@ def _scene(shapes, elev, azim, max_triangles):
         step = max(1, len(tris) // max_triangles)
         tris = tris[::step]
     projected = _project(verts, elev, azim)
-    polys = []
+
+    # Average adjacent face normals into vertex normals: the surface is smooth even
+    # though every triangle is still filled flat, which removes the faceted look.
+    acc = [[0.0, 0.0, 0.0] for _ in projected]
     for tri in tris:
-        a, b, c = projected[tri[0]], projected[tri[1]], projected[tri[2]]
-        ux, uy, uz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
-        vx, vy, vz = c[0] - a[0], c[1] - a[1], c[2] - a[2]
-        normal = (uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx)
-        depth = (a[2] + b[2] + c[2]) / 3.0
-        polys.append((depth, [(p[0], p[1]) for p in (a, b, c)], _shade(normal)))
+        pa, pb, pc = projected[tri[0]], projected[tri[1]], projected[tri[2]]
+        ux, uy, uz = pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]
+        vx, vy, vz = pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]
+        nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+        for index in tri:
+            acc[index][0] += nx
+            acc[index][1] += ny
+            acc[index][2] += nz
+    vertex_normals = [tuple(slot) for slot in acc]
+
+    def build(cull: bool):
+        out = []
+        for tri in tris:
+            a, b, c = projected[tri[0]], projected[tri[1]], projected[tri[2]]
+            ux, uy = b[0] - a[0], b[1] - a[1]
+            vx, vy = c[0] - a[0], c[1] - a[1]
+            if cull and (ux * vy - uy * vx) <= 0:
+                # faces away from the camera
+                continue
+            na, nb, nc = vertex_normals[tri[0]], vertex_normals[tri[1]], vertex_normals[tri[2]]
+            normal = (na[0] + nb[0] + nc[0], na[1] + nb[1] + nc[1], na[2] + nb[2] + nc[2])
+            # Farthest vertex, not the centroid: long tessellation slivers would
+            # otherwise be drawn in front of surfaces they belong to.
+            depth = max(a[2], b[2], c[2])
+            out.append((depth, [(p[0], p[1]) for p in (a, b, c)], _shade(normal)))
+        return out
+
+    polys = build(cull=True)
+    if len(polys) < max(8, len(tris) // 20):
+        # Winding is reversed (common for imported mesh data); render both sides.
+        polys = build(cull=False)
     polys.sort(key=lambda item: item[0])
     return polys
 
 
 def _deviation_for(shapes):
+    """Chord tolerance for tessellation.
+
+    size/220 produced visibly faceted curved faces. A part of a few hundred
+    millimetres needs about size/400, never below 20 µm.
+    """
     box = _bbox_of(shapes)
     if box is None:
-        return 0.5
+        return 0.2
     size = max(box.XLength, box.YLength, box.ZLength, 1.0)
-    return max(size / 220.0, 0.05)
+    # ~0.01 mm chord on a 250 mm part is what makes 30 mm radii look round; coarser
+    # values stay visibly polygonal at print size.
+    return min(max(size / 20000.0, 0.005), 0.05)
+
+
+def _rasterize_png(verts, tris, elev, azim, path, width, height, note, background=(0.96, 0.97, 0.98)):
+    """Z-buffered software rasteriser with Gouraud shading.
+
+    Matplotlib's painter algorithm fills whole triangles in one flat colour and sorts
+    them back to front. On real assemblies that produces z-fighting slivers and a
+    faceted look. A per-pixel depth buffer plus interpolated vertex intensity is the
+    only way to get a clean image without a GPU or an OpenGL context.
+    """
+    try:
+        import matplotlib
+        import numpy as np
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as exc:  # pragma: no cover
+        raise WorkerError(
+            "PNG rendering needs numpy and matplotlib inside FreeCAD's Python. "
+            f"Use a .svg target instead. ({exc})",
+            "renderer_unavailable",
+        ) from exc
+
+    projected = np.array(_project(verts, elev, azim), dtype=float)
+    tri = np.array(tris, dtype=int)
+    if len(tri) == 0:
+        raise WorkerError("nothing to render", "empty_selection")
+
+    # Face normals for culling, vertex normals for smooth shading.
+    pa = projected[tri[:, 0]]
+    pb = projected[tri[:, 1]]
+    pc = projected[tri[:, 2]]
+    u = pb - pa
+    v = pc - pa
+    area = u[:, 0] * v[:, 1] - u[:, 1] * v[:, 0]
+    keep = area > 0
+    if keep.sum() < max(8, len(tri) // 20):
+        keep = np.ones(len(tri), dtype=bool)  # reversed winding
+    tri = tri[keep]
+
+    vertex_normal = np.zeros_like(projected)
+    fn = np.cross(pb - pa, pc - pa)
+    for k in range(3):
+        np.add.at(vertex_normal, tri[:, k], fn[keep] if len(fn) == len(keep) else fn)
+    lengths = np.linalg.norm(vertex_normal, axis=1)
+    lengths[lengths == 0] = 1.0
+    vertex_normal /= lengths[:, None]
+
+    light = np.array([0.35, -0.55, 0.75])
+    light = light / np.linalg.norm(light)
+    intensity = 0.55 + 0.45 * np.abs(vertex_normal @ light)
+
+    scale = 2  # supersampling; without it the silhouettes alias into visible stair steps
+    w, h = width * scale, height * scale
+    xs, ys = projected[:, 0], projected[:, 1]
+    minx, maxx, miny, maxy = xs.min(), xs.max(), ys.min(), ys.max()
+    span = max(maxx - minx, maxy - miny, 1e-6)
+    pad = 0.06 * span
+    sx = (w - 1) / (span + 2 * pad)
+    sy = (h - 1) / (span + 2 * pad)
+
+    def to_px(idx):
+        x = (projected[idx, 0] - (minx - pad)) * sx
+        y = (maxy + pad - projected[idx, 1]) * sy
+        z = projected[idx, 2]
+        return x, y, z
+
+    zbuf = np.full((h, w), -np.inf)
+    img = np.empty((h, w, 3), dtype=float)
+    img[:] = background
+    base = np.array([0.55, 0.68, 0.82])
+
+    order = np.argsort(projected[tri].mean(axis=1)[:, 2])  # far to near
+    for k in order:
+        t = tri[k]
+        x0, x1, x2 = to_px(t[0])[0], to_px(t[1])[0], to_px(t[2])[0]
+        y0, y1, y2 = to_px(t[0])[1], to_px(t[1])[1], to_px(t[2])[1]
+        z0, z1, z2 = to_px(t[0])[2], to_px(t[1])[2], to_px(t[2])[2]
+        xmin, xmax = int(max(0, np.floor(min(x0, x1, x2)))), int(min(w - 1, np.ceil(max(x0, x1, x2))))
+        ymin, ymax = int(max(0, np.floor(min(y0, y1, y2)))), int(min(h - 1, np.ceil(max(y0, y1, y2))))
+        if xmax < xmin or ymax < ymin:
+            continue
+        denom = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2)
+        if abs(denom) < 1e-12:
+            continue
+        gx, gy = np.meshgrid(np.arange(xmin, xmax + 1) + 0.5, np.arange(ymin, ymax + 1) + 0.5)
+        l0 = ((y1 - y2) * (gx - x2) + (x2 - x1) * (gy - y2)) / denom
+        l1 = ((y2 - y0) * (gx - x2) + (x0 - x2) * (gy - y2)) / denom
+        l2 = 1.0 - l0 - l1
+        inside = (l0 >= -1e-9) & (l1 >= -1e-9) & (l2 >= -1e-9)
+        if not inside.any():
+            continue
+        z = l0 * z0 + l1 * z1 + l2 * z2
+        sub_z = zbuf[ymin:ymax + 1, xmin:xmax + 1]
+        mask = inside & (z > sub_z)
+        if not mask.any():
+            continue
+        shade = l0 * intensity[t[0]] + l1 * intensity[t[1]] + l2 * intensity[t[2]]
+        colour = np.clip(base[None, None, :] * shade[:, :, None], 0, 1)
+        sub = img[ymin:ymax + 1, xmin:xmax + 1]
+        sub[mask] = colour[mask]
+        sub_z[mask] = z[mask]
+
+    if scale > 1:
+        img = img.reshape(h // scale, scale, w // scale, scale, 3).mean(axis=(1, 3))
+
+    fig = plt.figure(figsize=(width / 100.0, height / 100.0), dpi=100)
+    ax = fig.add_axes((0, 0, 1, 1))
+    ax.imshow(img, interpolation="bilinear")
+    ax.axis("off")
+    fig.patch.set_facecolor(tuple(background))
+    if note:
+        ax.text(0.5, 0.02, note, transform=ax.transAxes, ha="center", va="bottom",
+                fontsize=7, color="#5a6672")
+    fig.savefig(path, facecolor=fig.get_facecolor())
+    plt.close(fig)
 
 
 def _write_png(polys, path, width, height, note):
@@ -661,8 +813,8 @@ def _write_png(polys, path, width, height, note):
     collection = PolyCollection(
         [poly for _, poly, _ in polys],
         facecolors=[colour for _, _, colour in polys],
-        edgecolors=[(0.12, 0.18, 0.24, 0.35) for _ in polys],
-        linewidths=0.2,
+        edgecolors="none",
+        linewidths=0,
         antialiaseds=True,
     )
     ax.add_collection(collection)
@@ -731,7 +883,7 @@ def m_screenshot(params):
         elev = float(params["elevation"])
     if params.get("azimuth") is not None:
         azim = float(params["azimuth"])
-    polys = _scene(shapes, elev, azim, int(params.get("max_triangles") or 60000))
+    max_tris = int(params.get("max_triangles") or 400000)
     box = _bbox_of(shapes)
     note = ""
     if box is not None:
@@ -740,13 +892,25 @@ def m_screenshot(params):
             f"view {view}  |  FreeCAD {'.'.join(str(v) for v in FreeCAD.Version()[:3])}"
         )
     if path.lower().endswith(".svg"):
+        polys = _scene(shapes, elev, azim, max_tris)
         _write_svg(polys, path, width, height, note)
+        tri_count = len(polys)
     else:
-        _write_png(polys, path, width, height, note)
+        deviation = _deviation_for(shapes)
+        verts, tris = _tessellate(shapes, deviation)
+        # Coarsen step by step until the triangle budget fits; subsampling would
+        # punch holes into the mesh, so the tolerance is what gets relaxed.
+        for _ in range(8):
+            if len(tris) <= max_tris:
+                break
+            deviation *= 1.5
+            verts, tris = _tessellate(shapes, deviation)
+        _rasterize_png(verts, tris, elev, azim, path, width, height, note)
+        tri_count = len(tris)
     return {
         "path": path,
         "bytes": os.path.getsize(path),
-        "triangles": len(polys),
+        "triangles": tri_count,
         "view": view,
         "size": [width, height],
         "note": note,
