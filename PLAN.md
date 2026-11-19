@@ -26,4 +26,5 @@ Target: a production-usable MCP server for headless FreeCAD, published as a publ
 
 - MIT, public repository (explicit owner decision; this project is not client work).
 - No network access at runtime, no telemetry, no external services.
-- Every tool call is path-guarded before it reaches FreeCAD.
+- Typed file-tool path arguments are guarded before reaching FreeCAD. Trusted `execute_python`
+  runs arbitrary host code and bypasses those guards; this is not a sandbox.

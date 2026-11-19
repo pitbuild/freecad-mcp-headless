@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "freecad-mcp-headless"
+version = "0.1.0"
+description = "MCP server for headless FreeCAD: open, inspect, measure, export and render models without a GUI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Neo Lück" }]
+keywords = ["freecad", "mcp", "cad", "step", "headless", "model-context-protocol"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Manufacturing",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering",
+]
+dependencies = ["mcp>=1.2,<2"]
+
+[project.optional-dependencies]
+render = ["matplotlib>=3.7"]
+dev = ["pytest>=8", "pytest-timeout>=2", "ruff>=0.6"]
+
+[project.scripts]
+freecad-mcp-headless = "freecad_mcp.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/pitbuild/freecad-mcp-headless"
+Issues = "https://github.com/pitbuild/freecad-mcp-headless/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/freecad_mcp"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/freecad_mcp/worker.py" = "freecad_mcp/worker.py"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "integration: needs a real freecadcmd installation",
+]
+addopts = "-m 'not integration'"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

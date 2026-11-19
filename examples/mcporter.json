@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "freecad": {
+      "command": "freecad-mcp-headless",
+      "args": ["--allow-path", "/root/cad-work", "--no-execute"]
+    }
+  }
+}

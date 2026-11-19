@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit:
+    name: unit (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,render]"
+      - name: Lint
+        run: ruff check src tests
+      - name: Unit tests
+        run: pytest -q
+
+  integration:
+    name: integration (real FreeCAD)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache FreeCAD AppImage
+        id: cache-freecad
+        uses: actions/cache@v4
+        with:
+          path: ~/freecad
+          key: freecad-1.1.4-linux-x86_64
+
+      - name: Download FreeCAD
+        if: steps.cache-freecad.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/freecad
+          curl -L --fail --retry 3 -o /tmp/freecad.AppImage \
+            https://github.com/FreeCAD/FreeCAD/releases/download/1.1.4/FreeCAD_1.1.4-Linux-x86_64-py311.AppImage
+          chmod +x /tmp/freecad.AppImage
+          cd ~/freecad && /tmp/freecad.AppImage --appimage-extract >/dev/null
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,render]"
+
+      - name: Integration tests
+        env:
+          FREECADCMD: ${{ github.workspace }}/../freecad/squashfs-root/usr/bin/freecadcmd
+        run: |
+          FREECADCMD="$HOME/freecad/squashfs-root/usr/bin/freecadcmd" pytest -m integration -q

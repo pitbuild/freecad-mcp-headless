@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "freecad": {
+      "command": "/path/to/venv/bin/freecad-mcp-headless",
+      "args": ["--allow-path", "/Users/you/CAD"],
+      "env": { "FREECADCMD": "/Applications/FreeCAD.app/Contents/Resources/bin/freecadcmd" }
+    }
+  }
+}
