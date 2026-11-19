@@ -187,3 +187,29 @@ def test_real_read_only_mcp_workflow(worker, model):
                 data = json.loads(measured.content[0].text)
                 assert data["total"]["volume_mm3"] == pytest.approx(6000 + math.pi * 9 * 25)
     asyncio.run(scenario())
+
+
+def test_datum_geometry_is_ignored(worker, tmp_path):
+    """Regression: PartDesign datum planes carry infinite faces.
+
+    They are construction geometry, not material. Including them produced a volume of
+    ~1e168 mm3 and a 2e100 mm bounding box on a real assembly.
+    """
+    path = tmp_path / "datum.FCStd"
+    code = f"""
+import FreeCAD, Part
+doc = FreeCAD.newDocument("Datum")
+box = doc.addObject("Part::Box", "Box")
+box.Length, box.Width, box.Height = 10.0, 20.0, 30.0
+plane = doc.addObject("PartDesign::Plane", "DatumPlane")
+plane.MapMode = "Deactivated"
+doc.recompute()
+doc.saveAs({str(path)!r})
+result = doc.Name
+"""
+    worker.call("execute", {"code": code})
+    measured = worker.call("measure", {"document": "Datum"})
+    assert measured["total"]["volume_mm3"] == pytest.approx(6000.0, rel=1e-6)
+    assert measured["bbox"]["size_mm"] == pytest.approx([10.0, 20.0, 30.0], rel=1e-6)
+    assert [o["name"] for o in measured["objects"]] == ["Box"]
+    worker.call("close", {"document": "Datum"})

@@ -113,7 +113,35 @@ CONTAINER_TYPES = {
     "App::Plane",
     "App::Point",
     "App::LinkGroup",
+    # PartDesign reference geometry: datum planes/axes/lines have a face or edge with
+    # infinite extents. They are construction geometry, not material, and they would
+    # otherwise poison every volume sum and blow the bounding box up to ~1e100.
+    "PartDesign::Plane",
+    "PartDesign::Line",
+    "PartDesign::Point",
+    "PartDesign::CoordinateSystem",
+    "Sketcher::SketchObject",
 }
+
+# A real part is measured in millimetres; anything beyond this is reference geometry
+# or a corrupt shape, never a printable body.
+MAX_EXTENT_MM = 1e7
+
+
+def _is_meaningful(shape) -> bool:
+    """True when a shape has finite, human-scale extents and actual geometry."""
+    try:
+        if shape.isNull():
+            return False
+        if not shape.Faces and not shape.Solids:
+            return False
+        box = shape.BoundBox
+        for length in (box.XLength, box.YLength, box.ZLength):
+            if length != length or length > MAX_EXTENT_MM:  # NaN or absurd
+                return False
+        return True
+    except Exception:
+        return False
 
 
 def _shapes(doc, objects=None):
@@ -122,25 +150,33 @@ def _shapes(doc, objects=None):
     Containers (App::Part) and reference geometry (axes, planes) are skipped: their
     shape duplicates the children and would double every volume and blow up the
     bounding box with infinite extents.
+
+    PartDesign features (Pad, Pocket, Boolean, Pattern, …) each carry the *current*
+    result of their whole body, so measuring every feature sums the same solid many
+    times over. Unless the caller names them explicitly, only the Body is measured.
     """
     if objects:
         wanted = {o.strip() for o in objects}
+        nested: set[str] = set()
     else:
         wanted = None
+        nested = {
+            child.Name
+            for body in doc.Objects
+            if body.TypeId == "PartDesign::Body"
+            for child in getattr(body, "Group", []) or []
+        }
     for obj in doc.Objects:
         if wanted is not None and obj.Name not in wanted and obj.Label not in wanted:
             continue
         if obj.TypeId in CONTAINER_TYPES:
             continue
+        if obj.Name in nested:
+            continue
         shape = getattr(obj, "Shape", None)
         if shape is None:
             continue
-        try:
-            if shape.isNull():
-                continue
-            if not shape.Faces and not shape.Solids:
-                continue
-        except Exception:
+        if not _is_meaningful(shape):
             continue
         yield obj, shape
 

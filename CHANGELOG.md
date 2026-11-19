@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.1 — 2026-11-19
+
+- Measure, bounding box and rendering now ignore PartDesign datum geometry (planes,
+  lines, points, coordinate systems) and sketches. A real assembly previously reported
+  ~1e168 mm³ and a 2e100 mm bounding box because datum planes carry infinite faces.
+- PartDesign features (Pad, Pocket, Boolean, Fillet, Pattern, …) are no longer measured
+  individually: each one carries its body's current result, so summing them counted the
+  same solid many times over. Only the Body is measured unless features are named
+  explicitly.
+- Regression test for datum geometry; verified against a real 82-object, 4-body
+  PartDesign assembly.
+
 ## 0.1.0 — 2026-11-19
 
 First public release.
